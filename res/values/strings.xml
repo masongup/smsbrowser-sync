@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <string name="IPPromptString">Enter IP Address with port:</string>
+    <string name="app_name">SMSSyncApp</string>
+    <string name="PasswordPromptString">Enter password:</string>
+    <string name="SaveString">Save</string>
+    <string name="ToggleString">Toggle String</string>
+    <string name="SyncOffString">Autosync Off</string>
+    <string name="SyncOnString">Autosync On</string>
+    <string name="SyncNowTitle">Sync Now</string>
+    <string name="LastSyncTitleString">Last Sync:</string>
+
+</resources>
