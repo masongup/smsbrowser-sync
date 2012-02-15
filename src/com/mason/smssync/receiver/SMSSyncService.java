@@ -1,31 +1,30 @@
 package com.mason.smssync.receiver;
 
 //import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.security.MessageDigest;
 
 import javax.crypto.Cipher;
-import javax.crypto.CipherInputStream;
-import javax.crypto.CipherOutputStream;
 import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
-import javax.crypto.SecretKeyFactory;
-import javax.crypto.interfaces.PBEKey;
 
 import android.text.format.Time;
 
 import com.mason.smssync.SMSSyncAppConfigActivity;
 
 import android.app.IntentService;
+import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.net.Uri;
 import android.preference.PreferenceManager;
 import android.util.Log;
+
+import android.provider.ContactsContract.PhoneLookup;
 
 public class SMSSyncService extends IntentService
 {
@@ -65,31 +64,32 @@ public class SMSSyncService extends IntentService
 			//open the comm socket and transmit the IV
 			InetSocketAddress serverAddrPort = new InetSocketAddress(ipAddress, 1234);
 			Socket syncSocket = new Socket();
+			syncSocket.setSoTimeout(5000);
 			syncSocket.connect(serverAddrPort, 500);
 			OutputStream syncOut = syncSocket.getOutputStream();
 			syncOut.write(sendiv);
-			//syncOut.write(marker);
 			syncOut.flush();
 			
 			//create the output stream and transmit the timestamp
 			//note that the remote computer will not acknowledge anything until a proper timestamp is
 			//decoded and verified, which proves that it is talking to this app with the correct password
-			CipherOutputStream syncOutStr = new CipherOutputStream(syncOut, sendCipher);
-			OutputStreamWriter out = new OutputStreamWriter(syncOutStr);
 			Time currentTime = new Time();
 			currentTime.setToNow();
 			String timeString = currentTime.format3339(false);
-			out.write(timeString);
-			out.flush();
+			byte[] timeClearData = timeString.getBytes();
+			byte[] timeCipherData = sendCipher.doFinal(timeClearData);
+			OutputStream outStr = syncSocket.getOutputStream();
+			outStr.write(timeCipherData);
 			
 			//set up the input stream, then receive and decode the last message timestamp and range-check it
-			CipherInputStream syncInStr = new CipherInputStream(syncSocket.getInputStream(), recCipher);
-			InputStreamReader in = new InputStreamReader(syncInStr);
-			char[] readData = new char[150];
-			int readLength = in.read(readData, 0, 150);
-			String receivedTimestamp = String.valueOf(readData);
+			byte[] readData = new byte[23];
+			int readLength = 0;
+			InputStream inStr = syncSocket.getInputStream();
+			readLength = inStr.read(readData, 0, 23);
+			byte[] clearData = recCipher.doFinal(readData, 0, readLength);
+			String receivedTimestamp = new String(clearData);
 			Time rxTimestampTime = new Time();
-			rxTimestampTime.parse3339(receivedTimestamp);
+			rxTimestampTime.parse3339(receivedTimestamp);//"2012-01-13T16:00:00.000Z");
 			if (rxTimestampTime.after(currentTime))
 				throw new Exception("Last message time is after present time!");
 			if (lastSyncTimeStr != "null")
@@ -100,9 +100,45 @@ public class SMSSyncService extends IntentService
 					throw new Exception("Last message time is before last sync time!");
 			}
 			
+			//time to actually retrieve a list of the smses, then format, encrypt, and transmit.
+			ContentResolver myResolver = getContentResolver();
+			Cursor smsQueryResults = myResolver.query(
+					Uri.parse( "content://sms/" ),
+					new String[] { "date", "address", "type", "body" }, 
+					"date > ?", 
+					new String[] { Long.toString(rxTimestampTime.toMillis(false)) }, 
+					"date");
+			
+			StringBuilder smsListString = new StringBuilder();
+			smsQueryResults.moveToFirst();
+			
+			while(!smsQueryResults.isAfterLast())
+			{
+				smsListString.append(smsQueryResults.getString(0)).append('\t');
+				
+				Cursor contactResult = myResolver.query(
+						Uri.withAppendedPath(PhoneLookup.CONTENT_FILTER_URI, Uri.encode(smsQueryResults.getString(1))), 
+						new String[] {PhoneLookup.DISPLAY_NAME},
+						null, null, null);
+				if (contactResult.moveToFirst())
+					smsListString.append(contactResult.getString(0)).append('\t');
+				else
+					smsListString.append(smsQueryResults.getString(1)).append('\t');
+				
+				smsListString.append(smsQueryResults.getString(1)).append('\t');
+				smsListString.append(smsQueryResults.getString(2)).append('\t');
+				smsListString.append(smsQueryResults.getString(3)).append('\r');
+				smsQueryResults.moveToNext();
+			}
+			
+			String returnString = smsListString.toString();
+			byte[] returnClearData = returnString.getBytes();
+			byte[] returnCipherData = sendCipher.doFinal(returnClearData);
+			outStr.write(returnCipherData);
+
 			//close out the connections
-			out.close();
-			syncOutStr.close();
+			//out.close();
+			//syncOutStr.close();
 			syncSocket.close();
 		}
 		catch (Exception e)
