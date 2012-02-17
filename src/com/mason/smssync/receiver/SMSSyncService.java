@@ -90,14 +90,12 @@ public class SMSSyncService extends IntentService
 			String receivedTimestamp = new String(clearData);
 			Time rxTimestampTime = new Time();
 			rxTimestampTime.parse3339(receivedTimestamp);//"2012-01-13T16:00:00.000Z");
-			if (rxTimestampTime.after(currentTime))
-				throw new Exception("Last message time is after present time!");
 			if (lastSyncTimeStr != "null")
 			{
 				Time lastSyncTime = new Time();
-				lastSyncTime.parse(lastSyncTimeStr);
-				if (rxTimestampTime.before(lastSyncTime))
-					throw new Exception("Last message time is before last sync time!");
+				lastSyncTime.parse3339(lastSyncTimeStr);
+				if (rxTimestampTime.after(lastSyncTime))
+					throw new Exception("Last message time is after last sync time!");
 			}
 			
 			//time to actually retrieve a list of the smses, then format, encrypt, and transmit.
@@ -111,6 +109,7 @@ public class SMSSyncService extends IntentService
 			
 			StringBuilder smsListString = new StringBuilder();
 			smsQueryResults.moveToFirst();
+			int totalMessagesWritten = 0;
 			
 			while(!smsQueryResults.isAfterLast())
 			{
@@ -129,16 +128,31 @@ public class SMSSyncService extends IntentService
 				smsListString.append(smsQueryResults.getString(2)).append('\t');
 				smsListString.append(smsQueryResults.getString(3)).append('\r');
 				smsQueryResults.moveToNext();
+				totalMessagesWritten++;
+				if (smsListString.length() > 4500)  //limit the size of a sync packet to 5000 bytes;
+					break;							//if there's more than that, we'll sync again later
 			}
+			smsListString.append(totalMessagesWritten);
 			
 			String returnString = smsListString.toString();
 			byte[] returnClearData = returnString.getBytes();
 			byte[] returnCipherData = sendCipher.doFinal(returnClearData);
 			outStr.write(returnCipherData);
-
-			//close out the connections
-			//out.close();
-			//syncOutStr.close();
+			
+			byte[] returnMessageNumber = new byte[2];
+			readLength = inStr.read(returnMessageNumber, 0, 2);
+			if (readLength == 2)
+			{
+				byte[] readNumberClear = recCipher.doFinal(returnMessageNumber);
+				int readNumReturned = readNumberClear[0] & 0xFF + ((readNumberClear[1] & 0xFF) << 8);
+				if (readNumReturned == totalMessagesWritten)
+				{
+					SharedPreferences.Editor prefEditor = prefs.edit();
+					prefEditor.putString(SMSSyncAppConfigActivity.pLastSyncTime, timeString);
+					prefEditor.commit();
+				}
+			}
+			
 			syncSocket.close();
 		}
 		catch (Exception e)
