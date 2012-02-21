@@ -4,7 +4,10 @@ import com.mason.smssync.receiver.SMSSyncReceiver;
 //import com.mason.smssync.receiver.SMSSyncService;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
@@ -13,6 +16,7 @@ import android.view.View.OnClickListener;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.ToggleButton;
+import android.support.v4.content.LocalBroadcastManager;
 
 public class SMSSyncAppConfigActivity extends Activity {
     
@@ -27,6 +31,9 @@ public class SMSSyncAppConfigActivity extends Activity {
 	public static final String pLastSyncTime = "LastSyncTime";
 	public static final String pSyncIPAddr = "SyncIPAddr";
 	public static final String pSyncPassword = "SyncPassword";
+	public static final String ACTION_UPDATETIME = "com.mason.smssync.UPDATETIME";
+	
+	BroadcastReceiver syncTimeUpdateReceiver;
 	
     @Override
     public void onCreate(Bundle savedInstanceState) 
@@ -47,13 +54,15 @@ public class SMSSyncAppConfigActivity extends Activity {
         lastSyncTime.setText(prefs.getString(pLastSyncTime, "No last sync"));
         
         //get the ip address and password and write them to the text fields
-        IPAddressEntryBox.setText(prefs.getString(pSyncIPAddr, "0.0.0.0"));
+        IPAddressEntryBox.setText(prefs.getString(pSyncIPAddr, "0.0.0.0:6178"));
         passwordEntryBox.setText(prefs.getString(pSyncPassword, ""));
         
         //set the action handlers for the buttons
         syncNowButton.setOnClickListener(syncNowButtonListener);
         saveButton.setOnClickListener(new OnClickListener() { public void onClick(View v) { 
         	doSave();}});
+        
+        syncTimeUpdateReceiver = new TimeUpdateReciever();
     }
     
     @Override
@@ -61,6 +70,15 @@ public class SMSSyncAppConfigActivity extends Activity {
     {
     	super.onPause();
     	doSave();
+    	LocalBroadcastManager.getInstance(this).unregisterReceiver(syncTimeUpdateReceiver);
+    }
+    
+    @Override
+    public void onResume()
+    {
+    	super.onResume();
+    	lastSyncTime.setText(prefs.getString(pLastSyncTime, "No last sync"));
+    	LocalBroadcastManager.getInstance(this).registerReceiver(syncTimeUpdateReceiver, new IntentFilter(ACTION_UPDATETIME));
     }
     
     private OnClickListener syncNowButtonListener = new OnClickListener()
@@ -70,7 +88,6 @@ public class SMSSyncAppConfigActivity extends Activity {
     		Intent syncNowIntent = new Intent(SMSSyncReceiver.ACTION_SYNCSMS); //new Intent(getApplicationContext(), SMSSyncService.class);
     		syncNowIntent.setClass(getApplicationContext(), com.mason.smssync.receiver.SMSSyncReceiver.class);
     		sendBroadcast(syncNowIntent);
-    		//startService(syncNowIntent);
     	}
     };
     
@@ -79,8 +96,22 @@ public class SMSSyncAppConfigActivity extends Activity {
     	SharedPreferences.Editor prefsEditor = prefs.edit();
     	
     	//TODO: Add some validation here
-    	prefsEditor.putString(pSyncIPAddr, IPAddressEntryBox.getText().toString());
+    	String[] ipAddressArray = IPAddressEntryBox.getText().toString().split(":");
+    	if (ipAddressArray.length == 2)
+    	{
+    		prefsEditor.putString(pSyncIPAddr, IPAddressEntryBox.getText().toString());
+    	}
     	prefsEditor.putString(pSyncPassword, passwordEntryBox.getText().toString());
     	prefsEditor.commit();
+    }
+    
+    private class TimeUpdateReciever extends BroadcastReceiver
+    {
+		@Override
+		public void onReceive(Context arg0, Intent arg1)
+		{
+			lastSyncTime.setText(prefs.getString(pLastSyncTime, "No last sync"));
+		}
+    	
     }
 }

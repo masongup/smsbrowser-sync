@@ -11,6 +11,7 @@ import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
+import android.support.v4.content.LocalBroadcastManager;
 import android.text.format.Time;
 
 import com.mason.smssync.SMSSyncAppConfigActivity;
@@ -37,8 +38,10 @@ public class SMSSyncService extends IntentService
 	protected void onHandleIntent(Intent incomingIntent)
 	{
 		SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-		String ipAddress = prefs.getString(SMSSyncAppConfigActivity.pSyncIPAddr, "");
-		String lastSyncTimeStr = prefs.getString(SMSSyncAppConfigActivity.pLastSyncTime, "null");
+		String baseIPAddress = prefs.getString(SMSSyncAppConfigActivity.pSyncIPAddr, "");
+		String[] ipComponents = baseIPAddress.split(":");
+		if (ipComponents.length != 2)
+			return;
 		byte[] password = prefs.getString(SMSSyncAppConfigActivity.pSyncPassword, "").getBytes();
 		byte[] salt = { (byte)0x3b, (byte)0x58, (byte)0x3a, (byte)0x8c, (byte)0x49, (byte)0xd3, (byte)0x21, (byte)0x88 };
 		byte[] finalPass = new byte[password.length + salt.length];
@@ -62,7 +65,7 @@ public class SMSSyncService extends IntentService
 			byte[] sendiv = sendCipher.getIV();
 			
 			//open the comm socket and transmit the IV
-			InetSocketAddress serverAddrPort = new InetSocketAddress(ipAddress, 1234);
+			InetSocketAddress serverAddrPort = new InetSocketAddress(ipComponents[0], Integer.parseInt(ipComponents[1]));
 			Socket syncSocket = new Socket();
 			syncSocket.setSoTimeout(5000);
 			syncSocket.connect(serverAddrPort, 500);
@@ -89,14 +92,7 @@ public class SMSSyncService extends IntentService
 			byte[] clearData = recCipher.doFinal(readData, 0, readLength);
 			String receivedTimestamp = new String(clearData);
 			Time rxTimestampTime = new Time();
-			rxTimestampTime.parse3339(receivedTimestamp);//"2012-01-13T16:00:00.000Z");
-			if (lastSyncTimeStr != "null")
-			{
-				Time lastSyncTime = new Time();
-				lastSyncTime.parse3339(lastSyncTimeStr);
-				if (rxTimestampTime.after(lastSyncTime))
-					throw new Exception("Last message time is after last sync time!");
-			}
+			rxTimestampTime.parse3339(receivedTimestamp);
 			
 			//time to actually retrieve a list of the smses, then format, encrypt, and transmit.
 			ContentResolver myResolver = getContentResolver();
@@ -150,6 +146,7 @@ public class SMSSyncService extends IntentService
 					SharedPreferences.Editor prefEditor = prefs.edit();
 					prefEditor.putString(SMSSyncAppConfigActivity.pLastSyncTime, timeString);
 					prefEditor.commit();
+					LocalBroadcastManager.getInstance(this).sendBroadcast(new Intent(SMSSyncAppConfigActivity.ACTION_UPDATETIME));
 				}
 			}
 			
