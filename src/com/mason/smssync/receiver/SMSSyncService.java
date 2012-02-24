@@ -6,6 +6,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
@@ -18,10 +19,12 @@ import com.mason.smssync.SMSSyncAppConfigActivity;
 
 import android.app.IntentService;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.PowerManager;
 import android.preference.PreferenceManager;
 import android.util.Log;
 
@@ -29,9 +32,22 @@ import android.provider.ContactsContract.PhoneLookup;
 
 public class SMSSyncService extends IntentService
 {
+	PowerManager.WakeLock myWakeLock;
+	
 	public SMSSyncService()
 	{
 		super("SMSSyncThread");
+	}
+	
+	@Override
+	public int onStartCommand(Intent intent, int flags, int startId)
+	{
+		PowerManager myPM = (PowerManager)getSystemService(Context.POWER_SERVICE);
+		myWakeLock = myPM.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SMSSyncBackgrounder");
+		myWakeLock.acquire();
+		
+		super.onStartCommand(intent, flags, startId);
+		return (START_NOT_STICKY);
 	}
 
 	@Override
@@ -42,20 +58,11 @@ public class SMSSyncService extends IntentService
 		String[] ipComponents = baseIPAddress.split(":");
 		if (ipComponents.length != 2)
 			return;
-		byte[] password = prefs.getString(SMSSyncAppConfigActivity.pSyncPassword, "").getBytes();
-		byte[] salt = { (byte)0x3b, (byte)0x58, (byte)0x3a, (byte)0x8c, (byte)0x49, (byte)0xd3, (byte)0x21, (byte)0x88 };
-		byte[] finalPass = new byte[password.length + salt.length];
-		System.arraycopy(password, 0, finalPass, 0, password.length);
-		System.arraycopy(salt, 0, finalPass, password.length, salt.length);
+		
+		SecretKeySpec syncKey = KeyFromPassword(prefs.getString(SMSSyncAppConfigActivity.pSyncPassword, ""));
 		
 		try
 		{
-			//generate the key for the encryption
-			MessageDigest md5er = MessageDigest.getInstance("MD5");
-			md5er.update(finalPass);
-			byte[] keyBytes = md5er.digest();
-			SecretKeySpec syncKey = new SecretKeySpec(keyBytes, "AES");
-			
 			//create the cipher objects and get the IV
 			Cipher sendCipher = Cipher.getInstance("AES/CFB8/NoPadding");
 			Cipher recCipher = Cipher.getInstance("AES/CFB8/NoPadding");
@@ -94,41 +101,8 @@ public class SMSSyncService extends IntentService
 			Time rxTimestampTime = new Time();
 			rxTimestampTime.parse3339(receivedTimestamp);
 			
-			//time to actually retrieve a list of the smses, then format, encrypt, and transmit.
-			ContentResolver myResolver = getContentResolver();
-			Cursor smsQueryResults = myResolver.query(
-					Uri.parse( "content://sms/" ),
-					new String[] { "date", "address", "type", "body" }, 
-					"date > ?", 
-					new String[] { Long.toString(rxTimestampTime.toMillis(false)) }, 
-					"date");
-			
 			StringBuilder smsListString = new StringBuilder();
-			smsQueryResults.moveToFirst();
-			int totalMessagesWritten = 0;
-			
-			while(!smsQueryResults.isAfterLast())
-			{
-				smsListString.append(smsQueryResults.getString(0)).append('\t');
-				
-				Cursor contactResult = myResolver.query(
-						Uri.withAppendedPath(PhoneLookup.CONTENT_FILTER_URI, Uri.encode(smsQueryResults.getString(1))), 
-						new String[] {PhoneLookup.DISPLAY_NAME},
-						null, null, null);
-				if (contactResult.moveToFirst())
-					smsListString.append(contactResult.getString(0)).append('\t');
-				else
-					smsListString.append(smsQueryResults.getString(1)).append('\t');
-				
-				smsListString.append(smsQueryResults.getString(1)).append('\t');
-				smsListString.append(smsQueryResults.getString(2)).append('\t');
-				smsListString.append(smsQueryResults.getString(3)).append('\r');
-				smsQueryResults.moveToNext();
-				totalMessagesWritten++;
-				if (smsListString.length() > 4500)  //limit the size of a sync packet to 5000 bytes;
-					break;							//if there's more than that, we'll sync again later
-			}
-			smsListString.append(totalMessagesWritten);
+			int totalMessages = GetSMSString(rxTimestampTime, smsListString);
 			
 			String returnString = smsListString.toString();
 			byte[] returnClearData = returnString.getBytes();
@@ -137,11 +111,12 @@ public class SMSSyncService extends IntentService
 			
 			byte[] returnMessageNumber = new byte[2];
 			readLength = inStr.read(returnMessageNumber, 0, 2);
+			syncSocket.close();
 			if (readLength == 2)
 			{
 				byte[] readNumberClear = recCipher.doFinal(returnMessageNumber);
 				int readNumReturned = readNumberClear[0] & 0xFF + ((readNumberClear[1] & 0xFF) << 8);
-				if (readNumReturned == totalMessagesWritten)
+				if (readNumReturned == totalMessages)
 				{
 					SharedPreferences.Editor prefEditor = prefs.edit();
 					prefEditor.putString(SMSSyncAppConfigActivity.pLastSyncTime, timeString);
@@ -149,13 +124,71 @@ public class SMSSyncService extends IntentService
 					LocalBroadcastManager.getInstance(this).sendBroadcast(new Intent(SMSSyncAppConfigActivity.ACTION_UPDATETIME));
 				}
 			}
-			
-			syncSocket.close();
 		}
 		catch (Exception e)
 		{
 			Log.d("SyncService", e.getMessage());
 		}
+		finally
+		{
+			myWakeLock.release();
+		}
 	}
-
+	
+	private SecretKeySpec KeyFromPassword(String passwordString)
+	{
+		byte[] password = passwordString.getBytes();
+		byte[] salt = { (byte)0x3b, (byte)0x58, (byte)0x3a, (byte)0x8c, (byte)0x49, (byte)0xd3, (byte)0x21, (byte)0x88 };
+		byte[] finalPass = new byte[password.length + salt.length];
+		System.arraycopy(password, 0, finalPass, 0, password.length);
+		System.arraycopy(salt, 0, finalPass, password.length, salt.length);
+		MessageDigest md5er;
+		try {
+			md5er = MessageDigest.getInstance("MD5");
+		} catch (NoSuchAlgorithmException e) {
+			e.printStackTrace();
+			return null;
+		}
+		md5er.update(finalPass);
+		byte[] keyBytes = md5er.digest();
+		return new SecretKeySpec(keyBytes, "AES");
+	}
+	
+	private int GetSMSString(Time startTime, StringBuilder smsListString)
+	{
+		ContentResolver myResolver = getContentResolver();
+		Cursor smsQueryResults = myResolver.query(
+				Uri.parse( "content://sms/" ),
+				new String[] { "date", "address", "type", "body" }, 
+				"date > ?", 
+				new String[] { Long.toString(startTime.toMillis(false)) }, 
+				"date");
+		
+		smsQueryResults.moveToFirst();
+		int totalMessagesWritten = 0;
+		
+		while(!smsQueryResults.isAfterLast())
+		{
+			smsListString.append(smsQueryResults.getString(0)).append('\t');
+			
+			Cursor contactResult = myResolver.query(
+					Uri.withAppendedPath(PhoneLookup.CONTENT_FILTER_URI, Uri.encode(smsQueryResults.getString(1))), 
+					new String[] {PhoneLookup.DISPLAY_NAME},
+					null, null, null);
+			if (contactResult.moveToFirst())
+				smsListString.append(contactResult.getString(0)).append('\t');
+			else
+				smsListString.append(smsQueryResults.getString(1)).append('\t');
+			
+			smsListString.append(smsQueryResults.getString(1)).append('\t');
+			smsListString.append(smsQueryResults.getString(2)).append('\t');
+			smsListString.append(smsQueryResults.getString(3)).append('\r');
+			smsQueryResults.moveToNext();
+			totalMessagesWritten++;
+			if (smsListString.length() > 2500)  //limit the size of a sync packet to 3000 bytes;
+				break;							//if there's more than that, we'll sync again later
+		}
+		smsListString.append(totalMessagesWritten);
+		return totalMessagesWritten;
+	}
 }

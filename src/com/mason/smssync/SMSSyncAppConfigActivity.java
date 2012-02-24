@@ -4,16 +4,22 @@ import com.mason.smssync.receiver.SMSSyncReceiver;
 //import com.mason.smssync.receiver.SMSSyncService;
 
 import android.app.Activity;
+import android.app.AlarmManager;
+import android.app.PendingIntent;
+import android.app.PendingIntent.CanceledException;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.preference.PreferenceManager;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.widget.Button;
+import android.widget.CompoundButton;
+import android.widget.CompoundButton.OnCheckedChangeListener;
 import android.widget.TextView;
 import android.widget.ToggleButton;
 import android.support.v4.content.LocalBroadcastManager;
@@ -31,9 +37,11 @@ public class SMSSyncAppConfigActivity extends Activity {
 	public static final String pLastSyncTime = "LastSyncTime";
 	public static final String pSyncIPAddr = "SyncIPAddr";
 	public static final String pSyncPassword = "SyncPassword";
+	public static final String pSyncActive = "SyncActive";
 	public static final String ACTION_UPDATETIME = "com.mason.smssync.UPDATETIME";
 	
 	BroadcastReceiver syncTimeUpdateReceiver;
+	PendingIntent pendingSyncNow;
 	
     @Override
     public void onCreate(Bundle savedInstanceState) 
@@ -50,6 +58,18 @@ public class SMSSyncAppConfigActivity extends Activity {
         toggleSync = (ToggleButton)findViewById(R.id.SyncToggle);
         prefs = PreferenceManager.getDefaultSharedPreferences(this);//getPreferences(MODE_PRIVATE);
         
+        Intent syncNowIntent = new Intent(SMSSyncReceiver.ACTION_SYNCSMS);
+		syncNowIntent.setClass(getApplicationContext(), com.mason.smssync.receiver.SMSSyncReceiver.class);
+		pendingSyncNow = PendingIntent.getBroadcast(this, 0, syncNowIntent, PendingIntent.FLAG_UPDATE_CURRENT);
+		if (prefs.getBoolean(pSyncActive, false))
+		{
+			toggleSync.setChecked(true);
+		}
+		else
+		{
+			toggleSync.setChecked(false);
+		}
+        
         //get the actual last sync time and write it to the string
         lastSyncTime.setText(prefs.getString(pLastSyncTime, "No last sync"));
         
@@ -61,6 +81,7 @@ public class SMSSyncAppConfigActivity extends Activity {
         syncNowButton.setOnClickListener(syncNowButtonListener);
         saveButton.setOnClickListener(new OnClickListener() { public void onClick(View v) { 
         	doSave();}});
+        toggleSync.setOnCheckedChangeListener(toggleSyncListener);
         
         syncTimeUpdateReceiver = new TimeUpdateReciever();
     }
@@ -81,13 +102,32 @@ public class SMSSyncAppConfigActivity extends Activity {
     	LocalBroadcastManager.getInstance(this).registerReceiver(syncTimeUpdateReceiver, new IntentFilter(ACTION_UPDATETIME));
     }
     
+    private OnCheckedChangeListener toggleSyncListener = new OnCheckedChangeListener()
+    {
+    	public void onCheckedChanged (CompoundButton buttonView, boolean isChecked)
+    	{
+    		AlarmManager appAlarmManager = (AlarmManager)getSystemService(Context.ALARM_SERVICE);
+    		appAlarmManager.cancel(pendingSyncNow);	//always cancel first, just in case any extra alarms are out there
+    		if (isChecked)
+    		{
+    			appAlarmManager.setInexactRepeating(AlarmManager.ELAPSED_REALTIME_WAKEUP, 
+    					SystemClock.elapsedRealtime(), AlarmManager.INTERVAL_HOUR, pendingSyncNow);
+    		}
+    		SharedPreferences.Editor prefsEditor = prefs.edit();
+    		prefsEditor.putBoolean(pSyncActive, isChecked);
+    		prefsEditor.commit();
+    	}
+    };
+    
     private OnClickListener syncNowButtonListener = new OnClickListener()
     {
     	public void onClick(View v)
     	{
-    		Intent syncNowIntent = new Intent(SMSSyncReceiver.ACTION_SYNCSMS); //new Intent(getApplicationContext(), SMSSyncService.class);
-    		syncNowIntent.setClass(getApplicationContext(), com.mason.smssync.receiver.SMSSyncReceiver.class);
-    		sendBroadcast(syncNowIntent);
+    		try {
+				pendingSyncNow.send();
+			} catch (CanceledException e) {
+				e.printStackTrace();
+			}
     	}
     };
     
